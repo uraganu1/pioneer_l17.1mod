@@ -28,6 +28,9 @@
 #include "battery.h"
 #include "step-chg-jeita.h"
 #include "storm-watch.h"
+#ifdef CONFIG_FORCE_FAST_CHARGE
+#include <linux/fastchg.h>
+#endif
 
 #define smblib_err(chg, fmt, ...)		\
 	pr_err("%s: %s: " fmt, chg->name,	\
@@ -1046,6 +1049,9 @@ int smblib_set_icl_current(struct smb_charger *chg, int icl_ua)
 	u8 reg;
 	bool icl_setting_again = false;
 #endif
+#ifdef CONFIG_FORCE_FAST_CHARGE
+	bool fast_charge = false;
+#endif
 
 	/* suspend and return if 25mA or less is requested */
 	if (icl_ua < USBIN_25MA)
@@ -1053,6 +1059,16 @@ int smblib_set_icl_current(struct smb_charger *chg, int icl_ua)
 
 	if (icl_ua == INT_MAX)
 		goto override_suspend_config;
+
+#ifdef CONFIG_FORCE_FAST_CHARGE
+	if (force_fast_charge > 0) {
+		if ((icl_ua == USBIN_500MA) || 
+		    (icl_ua == (USBIN_500MA - USBIN_25MA))) {
+			fast_charge = true;
+			icl_ua = USBIN_900MA - USBIN_25MA;
+		}
+	}
+#endif
 
 	/* configure current */
 #if !defined(CONFIG_SOMC_CHARGER_EXTENSION)
@@ -1113,9 +1129,19 @@ override_suspend_config:
 	}
 #endif
 
-	/* enforce override */
-	rc = smblib_masked_write(chg, USBIN_ICL_OPTIONS_REG,
-		USBIN_MODE_CHG_BIT, override ? USBIN_MODE_CHG_BIT : 0);
+#ifdef CONFIG_FORCE_FAST_CHARGE
+	if (fast_charge) {
+		rc = smblib_masked_write(chg, USBIN_ICL_OPTIONS_REG,
+				CFG_USB3P0_SEL_BIT | USB51_MODE_BIT,
+				CFG_USB3P0_SEL_BIT | USB51_MODE_BIT);
+	}
+	else
+#endif
+	{
+		/* enforce override */
+        	rc = smblib_masked_write(chg, USBIN_ICL_OPTIONS_REG,
+                        	USBIN_MODE_CHG_BIT, override ? USBIN_MODE_CHG_BIT : 0);
+	}
 
 	rc = smblib_icl_override(chg, override);
 	if (rc < 0) {
