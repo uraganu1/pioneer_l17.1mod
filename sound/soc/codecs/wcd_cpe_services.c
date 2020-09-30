@@ -422,7 +422,7 @@ static void cpe_create_worker_thread(struct cpe_info *t_info)
 	init_completion(&t_info->cmd_complete);
 	init_completion(&t_info->thread_comp);
 	t_info->stop_thread = false;
-	t_info->thread_handler = kthread_run(cpe_worker_thread,
+	t_info->thread_handler = kthread_run_perf_critical(cpe_worker_thread,
 		(void *)t_info, "cpe-worker-thread");
 	pr_debug("%s: Created new worker thread\n",
 		 __func__);

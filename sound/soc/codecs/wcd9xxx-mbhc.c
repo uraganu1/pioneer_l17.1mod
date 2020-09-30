@@ -4270,7 +4270,7 @@ static int wcd9xxx_setup_jack_detect_irq(struct wcd9xxx_mbhc *mbhc)
 		ret = request_threaded_irq(mbhc->mbhc_cfg->gpio_irq, NULL,
 					   wcd9xxx_mech_plug_detect_irq,
 					   (IRQF_TRIGGER_RISING |
-					    IRQF_TRIGGER_FALLING),
+					    IRQF_TRIGGER_FALLING | IRQF_PERF_CRITICAL),
 					   "headset detect", mbhc);
 		if (ret) {
 			pr_err("%s: Failed to request gpio irq %d\n", __func__,

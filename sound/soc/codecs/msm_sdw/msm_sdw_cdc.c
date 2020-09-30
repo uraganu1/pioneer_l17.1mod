@@ -572,7 +572,7 @@ static int msm_sdwm_handle_irq(void *handle,
 	if (action) {
 		ret = request_threaded_irq(msm_sdw->sdw_irq, NULL,
 					   swrm_irq_handler,
-					   IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
+					   IRQF_TRIGGER_HIGH | IRQF_ONESHOT | IRQF_PERF_CRITICAL,
 					   "swr_master_irq", swrm_handle);
 		if (ret)
 			dev_err(msm_sdw->dev, "%s: Failed to request irq %d\n",

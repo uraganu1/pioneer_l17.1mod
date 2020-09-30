@@ -355,7 +355,7 @@ got_gpio:
 		ret = request_any_context_irq(gpiod_to_irq(gpios[i].desc),
 					      gpio_handler,
 					      IRQF_TRIGGER_RISING |
-					      IRQF_TRIGGER_FALLING,
+					      IRQF_TRIGGER_FALLING | IRQF_PERF_CRITICAL,
 					      gpios[i].name,
 					      &gpios[i]);
 		if (ret < 0)
