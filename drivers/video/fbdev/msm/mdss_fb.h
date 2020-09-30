@@ -248,6 +248,12 @@ struct msm_mdp_interface {
 				out = (2 * ((v) * (max_bright)) + (bl_max));\
 				do_div(out, 2 * bl_max);\
 				} while (0)
+#define MDSS_BRIGHT_TO_DIM(out, v, adjust, b_min, b_max) do {\
+				out = (b_max - v)/(b_max/b_min)*adjust/112 +\
+				v*(112-adjust)/112%(b_max + 1);\
+				if (out < b_min) out = b_min;\
+				} while(0)
+
 
 struct mdss_fb_file_info {
 	struct file *file;
@@ -365,6 +371,12 @@ struct msm_fb_data_type {
 
 	u32 wait_for_kickoff;
 	u32 thermal_level;
+
+	struct mutex bkl_on_lock;
+	struct delayed_work bkl_on_dwork;
+	int c_bl_level;
+	int w_bl_level;
+	int t_bl_level;
 
 	int fb_mmap_type;
 	struct led_trigger *boot_notification_led;

@@ -48,6 +48,7 @@
 #include <linux/dma-buf.h>
 #include <sync.h>
 #include <sw_sync.h>
+#include <linux/android_tweaks.h>
 
 #include "mdss_fb.h"
 #include "mdss_mdp_splash_logo.h"
@@ -91,6 +92,11 @@ static u32 mdss_fb_pseudo_palette[16] = {
 	0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
 	0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff
 };
+
+#define BKL_UP_TIME 1024 // ms
+#define DIM_DEFAULT 64
+
+atomic_t dim_adjust_val;
 
 static struct msm_mdp_interface *mdp_instance;
 
@@ -273,35 +279,144 @@ static int mdss_fb_notify_update(struct msm_fb_data_type *mfd,
 
 static int lcd_backlight_registered;
 
-static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
-				      enum led_brightness value)
+static void mdss_fb_set_bl_brightness_delayed_work(struct work_struct *work)
 {
-	struct msm_fb_data_type *mfd = dev_get_drvdata(led_cdev->dev->parent);
-	int bl_lvl;
+	struct msm_fb_data_type *mfd = container_of((struct delayed_work *)work, struct msm_fb_data_type, bkl_on_dwork);
+	int w_time;
+
+	if (!mutex_trylock(&mfd->bkl_on_lock))
+                return;
+
+	if (mfd->c_bl_level == mfd->w_bl_level) {
+		mfd->t_bl_level = 0;
+		mutex_unlock(&mfd->bkl_on_lock);
+		return;
+	}
+	else if (mfd->c_bl_level == 0) {
+		if (mfd->w_bl_level != 0) {
+			mfd->t_bl_level = 4*BKL_UP_TIME/(mfd->w_bl_level - mfd->c_bl_level);
+			w_time = mfd->t_bl_level;
+			mfd->c_bl_level = mfd->panel_info->bl_min;
+		}
+	}
+	else {
+		if (mfd->w_bl_level != 0) {
+			if (mfd->w_bl_level > mfd->c_bl_level) {
+				mfd->t_bl_level = 4*BKL_UP_TIME/(mfd->w_bl_level - mfd->c_bl_level);
+				mfd->c_bl_level += 4;
+				if (mfd->c_bl_level > mfd->w_bl_level) {
+					mfd->c_bl_level = mfd->w_bl_level;
+				}
+			}
+			else {
+				mfd->t_bl_level = 4*BKL_UP_TIME/(2*mfd->c_bl_level - mfd->w_bl_level);
+				mfd->c_bl_level -= 4;
+				if (mfd->c_bl_level < mfd->w_bl_level) {
+					mfd->c_bl_level = mfd->w_bl_level;
+				}
+			}
+			w_time = mfd->t_bl_level;
+		}
+		else {
+			mfd->c_bl_level = 0;
+			mfd->t_bl_level = 0;
+		}
+	}
 
 	if (mfd->boot_notification_led) {
 		led_trigger_event(mfd->boot_notification_led, 0);
 		mfd->boot_notification_led = NULL;
 	}
 
+	if (!IS_CALIB_MODE_BL(mfd) && (!mfd->ext_bl_ctrl || !mfd->c_bl_level ||!mfd->bl_level)) {
+		mutex_lock(&mfd->bl_lock);
+		mdss_fb_set_backlight(mfd, mfd->c_bl_level);
+		mutex_unlock(&mfd->bl_lock);
+	}
+
+	mutex_unlock(&mfd->bkl_on_lock);
+	mfd->bl_level_usr = mfd->c_bl_level;
+	schedule_delayed_work(&mfd->bkl_on_dwork, msecs_to_jiffies(w_time));
+}
+
+
+static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
+				      enum led_brightness value)
+{
+	struct msm_fb_data_type *mfd = dev_get_drvdata(led_cdev->dev->parent);
+	int bl_lvl, adjusted_bl_lvl;
+	int adjust_value = atomic_read(&dim_adjust_val);
+
 	if (value > mfd->panel_info->brightness_max)
-		value = mfd->panel_info->brightness_max;
+			value = mfd->panel_info->brightness_max;
 
-	/* This maps android backlight level 0 to 255 into
-	   driver backlight level 0 to bl_max with rounding */
-	MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
-				mfd->panel_info->brightness_max);
+	if (value == 0) {
+		if (mfd->boot_notification_led) {
+			led_trigger_event(mfd->boot_notification_led, 0);
+			mfd->boot_notification_led = NULL;
+		}
+		/* This maps android backlight level 0 to 255 into
+	   	driver backlight level 0 to bl_max with rounding */
+		MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
+							mfd->panel_info->brightness_max);
 
-	if (!bl_lvl && value)
-		bl_lvl = 1;
-
-	if (!IS_CALIB_MODE_BL(mfd) && (!mfd->ext_bl_ctrl || !value ||
-							!mfd->bl_level)) {
+		if (!bl_lvl && value)
+			bl_lvl = 1;
+		
+		cancel_delayed_work_sync(&mfd->bkl_on_dwork);
+		mfd->c_bl_level = 0;
+		mfd->w_bl_level = 0;
+		mfd->t_bl_level = 0;
 		mutex_lock(&mfd->bl_lock);
 		mdss_fb_set_backlight(mfd, bl_lvl);
 		mutex_unlock(&mfd->bl_lock);
+		mfd->bl_level_usr = bl_lvl;
 	}
-	mfd->bl_level_usr = bl_lvl;
+	else {
+		mutex_lock(&mfd->bkl_on_lock);
+		if (mfd->c_bl_level == 0) {
+			/* This maps android backlight level 0 to 255 into
+	   		driver backlight level 0 to bl_max with rounding */
+			MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
+                						mfd->panel_info->brightness_max);
+			MDSS_BRIGHT_TO_DIM(adjusted_bl_lvl, bl_lvl, adjust_value, 
+								mfd->panel_info->bl_min, mfd->panel_info->bl_max);
+
+			mfd->w_bl_level = adjusted_bl_lvl;
+			mutex_unlock(&mfd->bkl_on_lock);
+			schedule_delayed_work(&mfd->bkl_on_dwork, 0);
+		}
+		else if (mfd->t_bl_level != 0) {
+			/* This maps android backlight level 0 to 255 into
+ 	   		driver backlight level 0 to bl_max with rounding */
+			MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
+								mfd->panel_info->brightness_max);
+			MDSS_BRIGHT_TO_DIM(adjusted_bl_lvl, bl_lvl, adjust_value, 
+                        				mfd->panel_info->bl_min, mfd->panel_info->bl_max);
+			
+			mfd->w_bl_level = adjusted_bl_lvl;
+			// display on is currently scheduled
+			mutex_unlock(&mfd->bkl_on_lock);
+		}
+		else {
+			/* This maps android backlight level 0 to 255 into
+	   		driver backlight level 0 to bl_max with rounding */
+			MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
+								mfd->panel_info->brightness_max);
+			MDSS_BRIGHT_TO_DIM(adjusted_bl_lvl, bl_lvl, adjust_value, 
+								mfd->panel_info->bl_min, mfd->panel_info->bl_max);
+
+			mfd->w_bl_level = adjusted_bl_lvl;
+
+			if (mfd->c_bl_level != mfd->w_bl_level) {
+				mutex_unlock(&mfd->bkl_on_lock);
+				schedule_delayed_work(&mfd->bkl_on_dwork, msecs_to_jiffies(128));
+			}
+			else {
+				mutex_unlock(&mfd->bkl_on_lock);
+			}
+		}
+	}
 }
 
 static enum led_brightness mdss_fb_get_bl_brightness(
@@ -912,6 +1027,34 @@ static ssize_t mdss_fb_idle_pc_notify(struct device *dev,
 {
 	return scnprintf(buf, PAGE_SIZE, "idle power collapsed\n");
 }
+
+static ssize_t mdss_dimadjust_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	  int adjust_val;
+        size_t count = 0;
+
+	  adjust_val = atomic_read(&dim_adjust_val);
+        count += sprintf(buf, "%d\n", adjust_val);
+        return count;
+}
+
+static ssize_t mdss_dimadjust_dump(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	int r, adjust_val;
+
+	r = kstrtoint(buf, 10, &adjust_val);
+	if ((r) || (adjust_val < 0)) {
+		return -EINVAL;
+	}
+	if (adjust_val > 110) {
+		adjust_val = 110;
+	}
+
+	atomic_set(&dim_adjust_val, adjust_val);
+
+	return count;
+}
+static DEVICE_ATTR(dimadjust, 0644, mdss_dimadjust_show, mdss_dimadjust_dump);
 
 static DEVICE_ATTR(msm_fb_type, S_IRUGO, mdss_fb_get_type, NULL);
 static DEVICE_ATTR(msm_fb_split, S_IRUGO | S_IWUSR, mdss_fb_show_split,
@@ -2762,6 +2905,26 @@ static int mdss_fb_register(struct msm_fb_data_type *mfd)
 	snprintf(panel_name, ARRAY_SIZE(panel_name), "mdss_panel_fb%d",
 		mfd->index);
 	mdss_panel_debugfs_init(panel_info, panel_name);
+
+	if (android_tweaks_kfpobj == NULL) {
+      	android_tweaks_kfpobj = kobject_create_and_add("android_tweaks", NULL) ;
+	}
+      if (android_tweaks_kfpobj == NULL) {
+      	pr_warn("%s: android_tweaks_kobj create_and_add failed\n", __func__);
+      }
+	else {
+		ret = sysfs_create_file(android_tweaks_kfpobj, &dev_attr_dimadjust.attr);
+            if (ret) {
+            	pr_warn("%s: sysfs_create_file failed for dimadjust\n", __func__);
+            }
+	}
+
+	mutex_init(&mfd->bkl_on_lock);
+	mfd->c_bl_level = mfd->bl_level;
+	mfd->w_bl_level = mfd->c_bl_level;
+	atomic_set(&dim_adjust_val, DIM_DEFAULT);
+	INIT_DELAYED_WORK(&mfd->bkl_on_dwork, mdss_fb_set_bl_brightness_delayed_work);
+	
 	pr_info("FrameBuffer[%d] %dx%d registered successfully!\n", mfd->index,
 					fbi->var.xres, fbi->var.yres);
 
