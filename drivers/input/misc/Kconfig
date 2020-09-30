@@ -859,4 +859,9 @@ config INPUT_S5712
 	  Say Y here if you want to support S-5712
 	  as bipolar detection device.
 
+config FP2WAKE
+        bool "Fingerprint to wake"
+        default n
+        help
+          Fingerprint to wake driver
 endif

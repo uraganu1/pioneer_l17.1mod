@@ -73,6 +73,20 @@
 #define DRDY_IRQ_ENABLE				1
 #define DRDY_IRQ_DISABLE			0
 
+
+#if defined(CONFIG_FP2WAKE)
+
+#define FP2WAKEDEBUG 	0
+
+typedef enum
+{
+    fp_UNINIT = 0,
+    fp_LCD_UNBLANK = 1,
+    fp_LCD_POWEROFF = 2,
+    fp_STATE_UNDEFINE = 255,
+} lcd_state;
+#endif
+
 /* interrupt polling */
 unsigned int fps_interrupt_poll(
 	struct file *file,
@@ -122,6 +136,17 @@ struct etspi_data {
 	struct mutex buf_lock;
 	unsigned users;
 	u8 *buffer;
+
+#if defined(CONFIG_FB)
+	struct notifier_block fb_notify;
+#endif
+
+#if defined(CONFIG_FP2WAKE)
+   	atomic_t display_state;
+   	bool fp2w_active;
+   	struct mutex fp2w_lock;
+   	struct delayed_work fp2wd_dwork;
+#endif //CONFIG_FP2WAKE
 
 	unsigned int irqPin;	    /* interrupt GPIO pin number */
 	unsigned int rstPin; 	    /* Reset GPIO pin number */

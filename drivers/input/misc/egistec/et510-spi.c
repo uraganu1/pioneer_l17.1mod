@@ -57,9 +57,18 @@
 #include <linux/spi/spi.h>
 #include <soc/qcom/scm.h>
 #include <linux/cei_hw_id.h>
-
+#if defined(CONFIG_FB)
+#include <linux/notifier.h>
+#include <linux/fb.h>
+#endif
 #include <linux/wakelock.h>
 #include "et510.h"
+#if defined(CONFIG_FP2WAKE)
+#include <linux/input.h>
+#include <linux/qpnp/qpnp-haptic.h>
+#endif
+
+#include <linux/android_tweaks.h>
 
 struct wake_lock et510_wake_lock;
 
@@ -133,17 +142,98 @@ static DECLARE_WAIT_QUEUE_HEAD(interrupt_waitq);
  *		Function Return
  */
 
+#if defined(CONFIG_FP2WAKE)
+
+#define FP2W_DEFAULT		1
+#define FP2W_PWRKEY_DUR		60
+#define DEFAULT_VIBR_TIME	32
+#define FP2W_PWRKEY_REARM	2048
+
+static struct input_dev * fingerprint2wake_pwrdev;
+int fp2w_switch = FP2W_DEFAULT;
+static bool pwrup_working = false;
+
+static DEFINE_MUTEX(pwrkeyworklock);
+
+/* PowerKey work func */
+static void fingerprint2wake_presspwr(struct work_struct * fingerprint2wake_presspwr_work) {
+
+	if (!mutex_trylock(&pwrkeyworklock))
+                return;
+#if FP2WAKEDEBUG
+        pr_info("FPDEBUG - Executing fingerprint2wake_presspwr\n");
+#endif
+        input_event(fingerprint2wake_pwrdev, EV_KEY, KEY_POWER, 1);
+        input_event(fingerprint2wake_pwrdev, EV_SYN, 0, 0);
+        msleep(FP2W_PWRKEY_DUR);
+        input_event(fingerprint2wake_pwrdev, EV_KEY, KEY_POWER, 0);
+        input_event(fingerprint2wake_pwrdev, EV_SYN, 0, 0);
+        msleep(FP2W_PWRKEY_DUR);
+        mutex_unlock(&pwrkeyworklock);
+	qpnp_hap_td_enable_external(DEFAULT_VIBR_TIME);
+        msleep(FP2W_PWRKEY_REARM/8);
+        pwrup_working = false;
+        return;
+}
+
+static DECLARE_WORK(fingerprint2wake_presspwr_work, fingerprint2wake_presspwr);
+
+static void fingerprint2wake_pwrtrigger(struct etspi_data *data) {
+
+        if (!pwrup_working && (fp_LCD_POWEROFF == atomic_read(&data->display_state))) {
+                pwrup_working = true;
+                schedule_work(&fingerprint2wake_presspwr_work);
+        }
+        return;
+}
+
+static void fp2w_detect_delayed_work(struct work_struct *work)
+{
+        struct etspi_data *etspi = container_of((struct delayed_work *)work, struct etspi_data, fp2wd_dwork);
+
+#if FP2WAKEDEBUG
+	pr_info("FPDEBUG - Execuring fp2w_detect_delayed_work, waking up display\n");
+#endif
+
+        mutex_lock(&etspi->fp2w_lock);
+        fingerprint2wake_pwrtrigger(etspi);
+        mutex_unlock(&etspi->fp2w_lock);
+}
+#endif //CONFIG_FP2WAKE
+
 void interrupt_timer_routine(unsigned long _data)
 {
 	struct interrupt_desc *bdata = (struct interrupt_desc *)_data;
 
 	DEBUG_PRINT("FPS interrupt count = %d", bdata->int_count);
+
+#if defined(CONFIG_FP2WAKE)
+	mutex_lock(&g_data->fp2w_lock);
+#endif
+	
 	if (bdata->int_count >= bdata->detect_threshold) {
+#if defined(CONFIG_FP2WAKE)
+		if (g_data->fp2w_active) {
+#if FP2WAKEDEBUG
+			pr_info("FPDEBUG - FPS triggered, scheduling wake up\n");
+#endif
+			wake_lock_timeout(&et510_wake_lock, msecs_to_jiffies(FP2W_PWRKEY_REARM/4));
+			schedule_delayed_work(&g_data->fp2wd_dwork, msecs_to_jiffies(FP2W_PWRKEY_REARM/32));
+		}
+		else {
+			bdata->finger_on = 1;
+		}
+#else
 		bdata->finger_on = 1;
+#endif	
 		DEBUG_PRINT("FPS triggered !!!!!!!\n");
 	} else {
 		DEBUG_PRINT("FPS not triggered !!!!!!!\n");
 	}
+
+#if defined(CONFIG_FP2WAKE)
+	mutex_unlock(&g_data->fp2w_lock);
+#endif
 
 	bdata->int_count = 0;
 	wake_up_interruptible(&interrupt_waitq);
@@ -419,6 +509,10 @@ static ssize_t device_prepare_set(struct device *dev,
 	int rc = 0;
 	struct regulator *vcc_ana;
 
+#if defined(CONFIG_FP2WAKE) && FP2WAKEDEBUG
+	pr_info("FPDEBUG - Executing device_prepare_set, buf: %s\n", buf);
+#endif
+
 	pr_err("et512 device_prepare_set start\n");
 	if (!strncmp(buf, "disable", strlen("disable"))) {
 		vcc_ana = regulator_get(dev, "et512_vcc");
@@ -479,6 +573,14 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	etspi = filp->private_data;
 
+#if defined(CONFIG_FP2WAKE)
+	mutex_lock(&etspi->fp2w_lock);
+
+#if FP2WAKEDEBUG
+        pr_info("FPDEBUG - Executing etspi_ioctl, cmd: %d\n", cmd);
+#endif
+#endif
+
 	switch (cmd) {
 	case INT_TRIGGER_INIT:
 //fingerprint et512 porting S
@@ -511,6 +613,13 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 						data.detect_threshold);
 		DEBUG_PRINT("fp_ioctl trigger init = %x\n", retval);
 
+#if defined(CONFIG_FP2WAKE)
+		etspi->fp2w_active = ((retval == 0) && (fp2w_switch == 1) && (fp_LCD_POWEROFF == atomic_read(&etspi->display_state)));
+#if FP2WAKEDEBUG
+		pr_info("FPDEBUG - Executing INT_TRIGGER_INIT, fp2w_active: %d\n", etspi->fp2w_active);
+#endif
+#endif
+
 	break;
 
 	case FP_SENSOR_RESET:
@@ -521,6 +630,9 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			DEBUG_PRINT("fp_ioctl <<< fp Trigger function close\n");
 			retval = Interrupt_Free(etspi);
 			DEBUG_PRINT("fp_ioctl trigger close = %x\n", retval);
+#if defined(CONFIG_FP2WAKE)
+			etspi->fp2w_active = false;
+#endif
 		goto done;
 	case INT_TRIGGER_ABORT:
 			DEBUG_PRINT("fp_ioctl <<< fp Trigger function close\n");
@@ -531,6 +643,11 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	break;
 	}
 done:
+
+#if defined(CONFIG_FP2WAKE)
+	mutex_unlock(&etspi->fp2w_lock);
+#endif
+	
 	return (retval);
 }
 
@@ -774,6 +891,69 @@ static const struct file_operations etspi_fops = {
 	.poll = fps_interrupt_poll
 };
 
+#if defined(CONFIG_FP2WAKE)
+#if defined(CONFIG_FB)
+static int fb_notifier_callback(struct notifier_block *self, unsigned long event, void *data)
+{
+        struct fb_event *evdata = data;
+        int *blank;
+
+	struct etspi_data *etspi = container_of(self, struct etspi_data, fb_notify);
+
+	if (evdata && evdata->data && etspi) {
+                if (event == FB_EVENT_BLANK) {
+                        blank = evdata->data;
+                        if (*blank == FB_BLANK_UNBLANK) {
+                                atomic_set(&etspi->display_state, fp_LCD_UNBLANK);
+#if FP2WAKEDEBUG
+				pr_info("FPDEBUG - Execuring fb_notifier_callback - fp_LCD_UNBLANK, fp2w_switch: %d\n", fp2w_switch);
+#endif
+                        }
+			else if (*blank == FB_BLANK_POWERDOWN) {
+				atomic_set(&etspi->display_state, fp_LCD_POWEROFF);
+				mutex_lock(&etspi->fp2w_lock);
+				etspi->fp2w_active = etspi->fp2w_active ? true : ((fp2w_switch == 1) && (fps_ints.drdy_irq_flag == DRDY_IRQ_ENABLE));
+				mutex_unlock(&etspi->fp2w_lock);
+#if FP2WAKEDEBUG
+				pr_info("FPDEBUG - Execuring fb_notifier_callback - fp_LCD_POWEROFF, fp2w_switch: %d\n", fp2w_switch);
+#endif				
+			}
+                }
+	}
+
+	return 0;
+}
+#endif //CONFIG_FB
+
+struct kobject *android_tweaks_kfpobj = NULL;
+
+EXPORT_SYMBOL_GPL(android_tweaks_kfpobj);
+
+static ssize_t fp2w_fingerprint2wake_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+        size_t count = 0;
+        count += sprintf(buf, "%d\n", fp2w_switch);
+        return count;
+}
+
+static ssize_t fp2w_fingerprint2wake_dump(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	if (buf[0] >= '0' && buf[0] <= '2' && buf[1] == '\n') {
+                if (fp2w_switch != buf[0] - '0') {
+                        fp2w_switch = buf[0] - '0';
+                }			
+	}
+#if FP2WAKEDEBUG
+	pr_info("FPDEBUG - Execuring fp2w_fingerprint2wake_dump, fp2w_switch: %d\n", fp2w_switch);
+#endif
+
+	return count;
+}
+
+static DEVICE_ATTR(fingerprint2wake, 0644, fp2w_fingerprint2wake_show, fp2w_fingerprint2wake_dump);
+#endif //CONFIG_FP2WAKE
+
+
 /*-------------------------------------------------------------------------*/
 
 static struct class *etspi_class;
@@ -840,6 +1020,9 @@ static int etspi_remove(struct platform_device *pdev)
 
 static int reg_set_load_check(struct regulator *reg, int load_uA)
 {
+#if defined(CONFIG_FP2WAKE) && FP2WAKEDEBUG
+    pr_info("FPDEBUG - Execuring reg_set_load_check - load_uA: %d\n", load_uA);
+#endif
     return (regulator_count_voltages(reg) > 0) ?
         regulator_set_load(reg, load_uA) : 0;
 }
@@ -887,6 +1070,18 @@ static int etspi_probe(struct platform_device *pdev)
 		pr_err("%s - Failed to kzalloc\n", __func__);
 		return -ENOMEM;
 	}
+
+#if defined(CONFIG_FB)
+	etspi->fb_notify.notifier_call = NULL;
+#endif
+
+#if defined(CONFIG_FP2WAKE)
+	pwrup_working = false;
+	atomic_set(&etspi->display_state, fp_UNINIT);
+	etspi->fp2w_active = false;
+	mutex_init(&etspi->fp2w_lock);
+	INIT_DELAYED_WORK(&etspi->fp2wd_dwork, fp2w_detect_delayed_work);
+#endif
 
 	/* device tree call */
 	if (pdev->dev.of_node) {
@@ -1015,6 +1210,44 @@ static int etspi_probe(struct platform_device *pdev)
 		pr_err("%s: et512 failed on create attr device prepare ret:%d\n", __func__, status);
 		goto err_register_attr_device_prepare;
 	}
+
+#if defined(CONFIG_FP2WAKE)
+    fingerprint2wake_pwrdev = input_allocate_device();
+    if  (!fingerprint2wake_pwrdev) {
+        pr_err("Can't allocate suspend autotest power button\n");
+    }
+    else {
+        input_set_capability(fingerprint2wake_pwrdev, EV_KEY, KEY_POWER);
+        fingerprint2wake_pwrdev->name = "fp2w_pwrkey";
+        fingerprint2wake_pwrdev->phys = "fp2w_pwrkey/input0";
+
+        error = input_register_device(fingerprint2wake_pwrdev);
+        if (error) {
+            pr_err("%s: input_register_device err=%d\n", __func__, error);
+            input_free_device(fingerprint2wake_pwrdev);
+        }
+        else {
+		if (android_tweaks_kfpobj == NULL) {
+            	android_tweaks_kfpobj = kobject_create_and_add("android_tweaks", NULL) ;
+		}
+            if (android_tweaks_kfpobj == NULL) {
+                pr_warn("%s: android_tweaks_kobj create_and_add failed\n", __func__);
+            }
+            else {
+                error = sysfs_create_file(android_tweaks_kfpobj, &dev_attr_fingerprint2wake.attr);
+                if (error) {
+                    pr_warn("%s: sysfs_create_file failed for doublewave2wake\n", __func__);
+                }
+            }
+        }
+#if defined(CONFIG_FB)
+        if (etspi->fb_notify.notifier_call == NULL) {
+            etspi->fb_notify.notifier_call = fb_notifier_callback;
+            fb_register_client(&etspi->fb_notify);
+        }
+#endif //CONFIG_FB
+    }
+#endif //CONFIG_FP2WAKE
 
 	request_irq_done = 0;
 	
