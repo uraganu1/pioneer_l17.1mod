@@ -52,6 +52,9 @@
 #include <linux/io.h>
 
 #include <asm/cacheflush.h>
+#ifdef CONFIG_THERMAL_NOTIFICATION
+#include <linux/thermal_notify.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #define TRACE_MSM_THERMAL
@@ -144,6 +147,10 @@
 				&cpus[cpu].threshold[_id + 1]); \
 		} \
 	} while (0)
+
+#ifdef CONFIG_THERMAL_NOTIFICATION
+#define THERMAL_NOTIFICATION_SCALE 2
+#endif
 
 static struct msm_thermal_data msm_thermal_info;
 static struct delayed_work check_temp_work, retry_hotplug_work;
@@ -411,6 +418,10 @@ static int thermal_config_debugfs_read(struct seq_file *m, void *data);
 static ssize_t thermal_config_debugfs_write(struct file *file,
 					const char __user *buffer,
 					size_t count, loff_t *ppos);
+
+#ifdef CONFIG_THERMAL_NOTIFICATION
+static long last_thermal_notification = THERMAL_EVENT_CPUS_COLD;
+#endif
 
 #define VDD_RES_RO_ATTRIB(_rail, ko_attr, j, _name) \
 	ko_attr.attr.name = __stringify(_name); \
@@ -3027,6 +3038,26 @@ static void retry_hotplug(struct work_struct *work)
 	mutex_unlock(&core_control_mutex);
 }
 
+#ifdef CONFIG_THERMAL_NOTIFICATION
+static void __ref do_thermal_notification(int temp)
+{
+	long thermal_notification = (int)THERMAL_EVENT_CPUS_COLD;
+	int i;
+	
+	for (i = (int)THERMAL_EVENT_CPUS_LIMIT_HIT; i <= THERMAL_EVENT_CPUS_COLD; i++) {
+		if (temp >= (msm_thermal_info.core_limit_temp_degC - THERMAL_NOTIFICATION_SCALE * i)) {
+			thermal_notification = i;
+			break;
+		}
+	}
+
+        if (last_thermal_notification != thermal_notification) {
+                last_thermal_notification = thermal_notification;
+                thermal_notifier_call_chain(last_thermal_notification, NULL);
+        }
+}
+#endif
+
 #ifdef CONFIG_SMP
 static void __ref do_core_control(int temp)
 {
@@ -3473,6 +3504,7 @@ do_ocr_exit:
 	return ret;
 }
 
+#ifndef CONFIG_THERMAL_NOTIFICATION
 static int do_vdd_restriction(void)
 {
 	int temp = 0;
@@ -3528,6 +3560,7 @@ exit:
 	mutex_unlock(&vdd_rstr_mutex);
 	return ret;
 }
+#endif
 
 static int do_psm(void)
 {
@@ -3660,7 +3693,11 @@ static void check_temp(struct work_struct *work)
 	if (!freq_table_get)
 		check_freq_table();
 
+#ifndef	CONFIG_THERMAL_NOTIFICATION
 	do_vdd_restriction();
+#else
+	do_thermal_notification(temp);
+#endif
 	do_freq_control(temp);
 
 reschedule:
@@ -3721,6 +3758,7 @@ static int __ref msm_thermal_cpu_callback(struct notifier_block *nfb,
 static struct notifier_block __refdata msm_thermal_cpu_notifier = {
 	.notifier_call = msm_thermal_cpu_callback,
 };
+
 static int hotplug_notify(enum thermal_trip_type type, int temp, void *data)
 {
 	struct cpu_info *cpu_node = (struct cpu_info *)data;
@@ -4973,6 +5011,20 @@ static struct kernel_param_ops module_ops = {
 
 module_param_cb(enabled, &module_ops, &enabled, 0644);
 MODULE_PARM_DESC(enabled, "enforce thermal limit on cpu");
+
+/* Poll ms */
+module_param_named(poll_ms, msm_thermal_info.poll_ms, uint, 0664);
+
+/* Temp Threshold */
+module_param_named(temp_threshold, msm_thermal_info.limit_temp_degC, int, 0664);
+module_param_named(core_limit_temp_degC, msm_thermal_info.core_limit_temp_degC, uint, 0644);
+module_param_named(hotplug_temp_degC, msm_thermal_info.hotplug_temp_degC, uint, 0644);
+module_param_named(freq_mitig_temp_degc, msm_thermal_info.freq_mitig_temp_degc, uint, 0644);
+
+/* Control Mask */
+module_param_named(freq_control_mask, msm_thermal_info.bootup_freq_control_mask, uint, 0644);
+module_param_named(core_control_mask, msm_thermal_info.core_control_mask, uint, 0664);
+module_param_named(freq_mitig_control_mask, msm_thermal_info.freq_mitig_control_mask, uint, 0644);
 
 static ssize_t show_cc_enabled(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)

@@ -205,6 +205,13 @@ config THERMAL_MONITOR
 	  entity starts running in the userspace. Monitors TSENS temperature
 	  and limits the max frequency of the cores.
 
+config THERMAL_NOTIFICATION
+        bool "Notify clients of thermal changes"
+        depends on THERMAL_MONITOR
+        default n
+        help
+          Notifies registered client of thermal changes
+
 config HISI_THERMAL
 	tristate "Hisilicon thermal driver"
 	depends on (ARCH_HISI && CPU_THERMAL && OF) || COMPILE_TEST
