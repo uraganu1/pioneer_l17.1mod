@@ -841,7 +841,7 @@
 		qcom,auxpcm-audio-intf;
 		qcom,ext-disp-audio-rx;
 		qcom,msm-mi2s-master = <1>, <1>, <1>, <1>;
-		qcom,msm-mclk-freq = <9600000>;
+		qcom,msm-mclk-freq = <12288000>;
 		qcom,msm-mbhc-hphl-swh = <1>;
 		qcom,msm-mbhc-gnd-swh = <1>;
 		qcom,msm-micbias2-ext-cap;
