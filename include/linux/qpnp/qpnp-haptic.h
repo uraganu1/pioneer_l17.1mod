@@ -12,6 +12,8 @@
 #ifndef __QPNP_HAPTIC_H
 #define __QPNP_HAPTIC_H
 
+extern void qpnp_hap_td_enable_external(int time_ms);
+
 /* interface for the other module to play different sequences */
 #ifdef CONFIG_QPNP_HAPTIC
 int qpnp_hap_play_byte(u8 data, bool on);
