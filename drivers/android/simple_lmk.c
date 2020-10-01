@@ -47,21 +47,22 @@ static const short adj_prio[] = {
        100, /* VISIBLE_APP_ADJ */
        0    /* FOREGROUND_APP_ADJ */
 #else
-static const short adjs[] = {
-       1000, /* CACHED_APP_MAX_ADJ + 1 */
-       950,  /* CACHED_APP_LMK_FIRST_ADJ */
-       900,  /* CACHED_APP_MIN_ADJ */
-       800,  /* SERVICE_B_ADJ */
-       700,  /* PREVIOUS_APP_ADJ */
-       600,  /* HOME_APP_ADJ */
-       500,  /* SERVICE_ADJ */
-       400,  /* HEAVY_WEIGHT_APP_ADJ */
-       300,  /* BACKUP_APP_ADJ */
-       250,  /* PERCEPTIBLE_LOW_APP_ADJ */
-       200,  /* PERCEPTIBLE_APP_ADJ */
-       100,  /* VISIBLE_APP_ADJ */
-       50,   /* PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ */
-       0     /* FOREGROUND_APP_ADJ */
+static const unsigned short adjs[] = {
+	SHRT_MAX + 1, /* Include all positive adjs in the final range */
+	950, /* CACHED_APP_LMK_FIRST_ADJ */
+	900, /* CACHED_APP_MIN_ADJ */
+	800, /* SERVICE_B_ADJ */
+	700, /* PREVIOUS_APP_ADJ */
+	600, /* HOME_APP_ADJ */
+	500, /* SERVICE_ADJ */
+	400, /* HEAVY_WEIGHT_APP_ADJ */
+	300, /* BACKUP_APP_ADJ */
+	250, /* PERCEPTIBLE_LOW_APP_ADJ */
+	200, /* PERCEPTIBLE_APP_ADJ */
+	100, /* VISIBLE_APP_ADJ */
+	50, /* PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ */
+	0 /* FOREGROUND_APP_ADJ */
+
 #endif
 };
 
@@ -107,8 +108,8 @@ static unsigned long get_total_mm_pages(struct mm_struct *mm)
 #ifdef CONFIG_ANDROID_SIMPLE_LMK_PIE
 static unsigned long find_victims(int *vindex, short target_adj)
 #else
-static unsigned long find_victims(int *vindex, short target_adj_min,
-                                  short target_adj_max)
+static unsigned long find_victims(int *vindex, unsigned short target_adj_min,
+				  unsigned short target_adj_max)
 #endif
 {
 	unsigned long pages_found = 0;
@@ -208,7 +209,7 @@ static void scan_and_kill(unsigned long pages_needed)
 		pages_found += find_victims(&nr_found, adj_prio[i]);
 #else
 	for (i = 1; i < ARRAY_SIZE(adjs); i++) {
-		pages_found += find_victims(&nr_victims, adjs[i], adjs[i - 1]);
+		pages_found += find_victims(&nr_found, adjs[i], adjs[i - 1]);
 #endif
 		if (pages_found >= pages_needed || nr_found == MAX_VICTIMS)
 			break;
