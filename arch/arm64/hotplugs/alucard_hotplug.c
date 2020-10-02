@@ -1439,6 +1439,7 @@ static int __init alucard_hotplug_init(void)
 
 #ifdef CONFIG_THERMAL_NOTIFICATION
 	thermal_notif.notifier_call = thermal_notifier_callback;
+	thermal_threshold = (long)THERMAL_EVENT_CPUS_COLD;
 #endif
 
 	if (hotplug_tuners_ins.hotplug_enable > 0) {
