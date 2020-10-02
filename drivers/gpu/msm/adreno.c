@@ -644,7 +644,6 @@ static void adreno_of_get_initial_pwrlevel(struct adreno_device *adreno_dev,
 		init_level = 1;
 
 	pwr->active_pwrlevel = init_level;
-	pwr->default_pwrlevel = init_level;
 }
 
 static int adreno_of_get_legacy_pwrlevels(struct adreno_device *adreno_dev,
@@ -767,9 +766,6 @@ static int adreno_of_get_power(struct adreno_device *adreno_dev,
 	device->pwrctrl.bus_control = of_property_read_bool(node,
 		"qcom,bus-control");
 
-	device->pwrctrl.input_disable = of_property_read_bool(node,
-		"qcom,disable-wake-on-touch");
-
 	return 0;
 }
 
@@ -883,7 +879,7 @@ static int adreno_probe(struct platform_device *pdev)
 
 	/* Initialize coresight for the target */
 	adreno_coresight_init(adreno_dev);
-        place_marker("M - DRIVER GPU Ready");
+    place_marker("M - DRIVER GPU Ready");
 out:
 	if (status) {
 		adreno_ringbuffer_close(adreno_dev);
