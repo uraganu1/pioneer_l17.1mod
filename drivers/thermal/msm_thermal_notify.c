@@ -19,6 +19,8 @@
 
 static BLOCKING_NOTIFIER_HEAD(thermal_notifier_list);
 
+static atomic_t max_cluster_freq[NR_CLUSTERS];
+
 /**
  *	thermal_register_client - register a client notifier
  *	@nb: notifier block to callback on events
@@ -50,4 +52,30 @@ int thermal_notifier_call_chain(unsigned long val, void *v)
 	return blocking_notifier_call_chain(&thermal_notifier_list, val, v);
 }
 EXPORT_SYMBOL_GPL(thermal_notifier_call_chain);
+
+void init_max_cluster_freq(void)
+{
+	int i;
+	for (i = 0; i < NR_CLUSTERS; i++) {
+		atomic_set(&max_cluster_freq[i], UINT_MAX);
+	}
+}
+EXPORT_SYMBOL_GPL(init_max_cluster_freq);
+
+void set_cluster_max_freq(unsigned int cluster_nr, unsigned int freq)
+{
+	if (cluster_nr < NR_CLUSTERS) {
+		atomic_set(&max_cluster_freq[cluster_nr], freq);
+	}
+}
+EXPORT_SYMBOL_GPL(set_cluster_max_freq);
+
+unsigned int get_cluster_max_freq(unsigned int cluster_nr)
+{
+	if (cluster_nr < NR_CLUSTERS) {
+		return atomic_read(&max_cluster_freq[cluster_nr]);
+	}
+	return UINT_MAX;
+}
+EXPORT_SYMBOL_GPL(get_cluster_max_freq);
 

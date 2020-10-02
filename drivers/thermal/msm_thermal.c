@@ -148,10 +148,6 @@
 		} \
 	} while (0)
 
-#ifdef CONFIG_THERMAL_NOTIFICATION
-#define THERMAL_NOTIFICATION_SCALE 2
-#endif
-
 static struct msm_thermal_data msm_thermal_info;
 static struct delayed_work check_temp_work, retry_hotplug_work;
 static bool core_control_enabled;
@@ -169,6 +165,9 @@ static struct completion thermal_monitor_complete;
 
 static int enabled;
 static int polling_enabled;
+#ifdef CONFIG_THERMAL_NOTIFICATION
+static int check_temp_enabled;
+#endif
 static int rails_cnt;
 static int sensor_cnt;
 static int psm_rails_cnt;
@@ -420,6 +419,7 @@ static ssize_t thermal_config_debugfs_write(struct file *file,
 					size_t count, loff_t *ppos);
 
 #ifdef CONFIG_THERMAL_NOTIFICATION
+#define THERMAL_NOTIFICATION_SCALE 2
 static long last_thermal_notification = THERMAL_EVENT_CPUS_COLD;
 #endif
 
@@ -1664,6 +1664,50 @@ static void update_cluster_freq(void)
 	}
 }
 
+#ifdef CONFIG_THERMAL_NOTIFICATION
+static void cluster_max_freq_init(void)
+{
+	init_max_cluster_freq();
+}
+
+static void do_cluster_max_freq_update(void)
+{
+	uint32_t _cluster = 0;
+	int freq_idx = 0, freq_idx_diff = 0;
+	struct cluster_info *cluster_ptr = NULL;
+
+	get_online_cpus();
+	for (; _cluster < core_ptr->entity_count; _cluster++) {
+                cluster_ptr = &core_ptr->child_entity_ptr[_cluster];
+                if (!cluster_ptr->freq_table)
+                        continue;
+		if (cpumask_intersects(cpu_perf_mask, &cluster_ptr->cluster_cores)) {
+			if (core_control_enabled) {
+				freq_idx_diff = (long)THERMAL_EVENT_CPUS_COLD - last_thermal_notification;
+			}
+			freq_idx = cluster_ptr->freq_idx_high - freq_idx_diff;
+		}
+		else {
+			freq_idx_diff = 0;
+			if (core_control_enabled && (last_thermal_notification < (long)THERMAL_EVENT_CPUS_WARMING)) {
+				freq_idx_diff = (long)THERMAL_EVENT_CPUS_HOT - last_thermal_notification;
+			}
+			freq_idx = cluster_ptr->freq_idx_high - freq_idx_diff;
+		}
+		if ((freq_idx <= 0) || (freq_idx == cluster_ptr->freq_idx))
+			continue;
+		cluster_ptr->freq_idx = freq_idx;
+		if (cluster_ptr->freq_idx == cluster_ptr->freq_idx_high) {
+			pr_info("Restoring cluster number: %d to full frequency\n", _cluster);
+		}
+		else {
+			pr_info("Limiting cluster number: %d to frequency: %d\n", _cluster, cluster_ptr->freq_table[freq_idx].frequency);
+		}
+		set_cluster_max_freq(_cluster, cluster_ptr->freq_table[freq_idx].frequency);
+	}
+	put_online_cpus();
+}
+#else
 static void do_cluster_freq_ctrl(int temp)
 {
 	uint32_t _cluster = 0;
@@ -1714,6 +1758,7 @@ static void do_cluster_freq_ctrl(int temp)
 		update_cluster_freq();
 	put_online_cpus();
 }
+#endif
 
 /**
  * msm_thermal_lmh_dcvs_init: Initialize LMH DCVS hardware block
@@ -2779,6 +2824,7 @@ done:
 	return (ret_mx | ret_cx);
 }
 
+#ifndef CONFIG_THERMAL_NOTIFICATION
 static int do_vdd_mx(void)
 {
 	int temp = 0;
@@ -2824,6 +2870,7 @@ exit:
 	mutex_unlock(&vdd_mx_mutex);
 	return ret;
 }
+#endif
 
 static void vdd_mx_notify(struct therm_threshold *trig_thresh)
 {
@@ -2897,6 +2944,7 @@ static void msm_thermal_bite(int zone_id, int temp)
 	}
 }
 
+#ifndef CONFIG_THERMAL_NOTIFICATION
 static int do_therm_reset(void)
 {
 	int ret = 0, i;
@@ -2924,6 +2972,7 @@ static int do_therm_reset(void)
 
 	return ret;
 }
+#endif
 
 static void therm_reset_notify(struct therm_threshold *thresh_data)
 {
@@ -3042,16 +3091,20 @@ static void retry_hotplug(struct work_struct *work)
 static void __ref do_thermal_notification(int temp)
 {
 	long thermal_notification = (int)THERMAL_EVENT_CPUS_COLD;
-	int i;
-	
-	for (i = (int)THERMAL_EVENT_CPUS_LIMIT_HIT; i <= THERMAL_EVENT_CPUS_COLD; i++) {
-		if (temp >= (msm_thermal_info.core_limit_temp_degC - THERMAL_NOTIFICATION_SCALE * i)) {
-			thermal_notification = i;
-			break;
-		}
-	}
+        int i;
 
-        if (last_thermal_notification != thermal_notification) {
+        for (i = (int)THERMAL_EVENT_CPUS_LIMIT_HIT; i <= THERMAL_EVENT_CPUS_COLD; i++) {
+                if (temp >= (msm_thermal_info.limit_temp_degC - THERMAL_NOTIFICATION_SCALE * i)) {
+                        thermal_notification = i;
+                        break;
+                }
+        }
+
+        if (temp == 0) {
+                last_thermal_notification = (long)THERMAL_EVENT_CPUS_COLD;
+                thermal_notifier_call_chain(last_thermal_notification, NULL);
+        }
+        else if (last_thermal_notification != thermal_notification) {
                 last_thermal_notification = thermal_notification;
                 thermal_notifier_call_chain(last_thermal_notification, NULL);
         }
@@ -3059,6 +3112,7 @@ static void __ref do_thermal_notification(int temp)
 #endif
 
 #ifdef CONFIG_SMP
+#ifndef CONFIG_THERMAL_NOTIFICATION
 static void __ref do_core_control(int temp)
 {
 	int i = 0;
@@ -3131,6 +3185,8 @@ static void __ref do_core_control(int temp)
 	}
 	mutex_unlock(&core_control_mutex);
 }
+#endif
+
 /* Call with core_control_mutex locked */
 static int __ref update_offline_cores(int val)
 {
@@ -3290,10 +3346,12 @@ static __ref int do_hotplug(void *data)
 	return ret;
 }
 #else
+#ifndef CONFIG_THERMAL_NOTIFICATION
 static void __ref do_core_control(int temp)
 {
 	return;
 }
+#endif
 
 static __ref int do_hotplug(void *data)
 {
@@ -3306,6 +3364,7 @@ static int __ref update_offline_cores(int val)
 }
 #endif
 
+#ifndef CONFIG_THERMAL_NOTIFICATION
 static int do_gfx_phase_cond(void)
 {
 	int temp = 0;
@@ -3504,7 +3563,6 @@ do_ocr_exit:
 	return ret;
 }
 
-#ifndef CONFIG_THERMAL_NOTIFICATION
 static int do_vdd_restriction(void)
 {
 	int temp = 0;
@@ -3560,7 +3618,6 @@ exit:
 	mutex_unlock(&vdd_rstr_mutex);
 	return ret;
 }
-#endif
 
 static int do_psm(void)
 {
@@ -3663,13 +3720,16 @@ static void do_freq_control(int temp)
 	update_cluster_freq();
 	put_online_cpus();
 }
+#endif
 
 static void check_temp(struct work_struct *work)
 {
 	int temp = 0;
 	int ret = 0;
 
+#ifndef CONFIG_THERMAL_NOTIFICATION
 	do_therm_reset();
+#endif
 
 	ret = therm_get_temp(msm_thermal_info.sensor_id, THERM_TSENS_ID, &temp);
 	if (ret) {
@@ -3677,6 +3737,11 @@ static void check_temp(struct work_struct *work)
 				msm_thermal_info.sensor_id, ret);
 		goto reschedule;
 	}
+
+#ifdef CONFIG_THERMAL_NOTIFICATION
+	do_thermal_notification(temp);
+	do_cluster_max_freq_update();
+#else
 	do_core_control(temp);
 	do_cxip_lm();
 	do_vdd_mx();
@@ -3693,15 +3758,16 @@ static void check_temp(struct work_struct *work)
 	if (!freq_table_get)
 		check_freq_table();
 
-#ifndef	CONFIG_THERMAL_NOTIFICATION
 	do_vdd_restriction();
-#else
-	do_thermal_notification(temp);
-#endif
 	do_freq_control(temp);
+#endif
 
 reschedule:
+#ifdef CONFIG_THERMAL_NOTIFICATION
+	if (polling_enabled || check_temp_enabled)
+#else
 	if (polling_enabled)
+#endif
 		schedule_delayed_work(&check_temp_work,
 				msecs_to_jiffies(msm_thermal_info.poll_ms));
 }
@@ -4955,7 +5021,9 @@ static void __ref disable_msm_thermal(void)
 
 	/* make sure check_temp is no longer running */
 	cancel_delayed_work_sync(&check_temp_work);
-
+#ifdef CONFIG_THERMAL_NOTIFICATION
+	do_thermal_notification(0);
+#endif
 	get_online_cpus();
 	for_each_possible_cpu(cpu) {
 		if (cpus[cpu].limited_max_freq == UINT_MAX &&
@@ -4986,6 +5054,13 @@ static void interrupt_mode_init(void)
 		msm_thermal_add_cx_nodes();
 		msm_thermal_add_gfx_nodes();
 	}
+#ifdef CONFIG_THERMAL_NOTIFICATION
+	else {
+		check_temp_enabled = 0;
+		disable_msm_thermal();
+		cluster_max_freq_init();
+	}
+#endif
 }
 
 static int __ref set_enabled(const char *val, const struct kernel_param *kp)
@@ -4995,9 +5070,16 @@ static int __ref set_enabled(const char *val, const struct kernel_param *kp)
 	ret = param_set_bool(val, kp);
 	if (!enabled)
 		interrupt_mode_init();
-	else
+	else {
+#ifdef CONFIG_THERMAL_NOTIFICATION
+		check_temp_enabled = 1;
+		cluster_max_freq_init();
+		schedule_delayed_work(&check_temp_work, 0);
+#else
 		pr_info("no action for enabled = %d\n",
 			enabled);
+#endif
+	}
 
 	pr_info("enabled = %d\n", enabled);
 
@@ -5017,14 +5099,6 @@ module_param_named(poll_ms, msm_thermal_info.poll_ms, uint, 0664);
 
 /* Temp Threshold */
 module_param_named(temp_threshold, msm_thermal_info.limit_temp_degC, int, 0664);
-module_param_named(core_limit_temp_degC, msm_thermal_info.core_limit_temp_degC, uint, 0644);
-module_param_named(hotplug_temp_degC, msm_thermal_info.hotplug_temp_degC, uint, 0644);
-module_param_named(freq_mitig_temp_degc, msm_thermal_info.freq_mitig_temp_degc, uint, 0644);
-
-/* Control Mask */
-module_param_named(freq_control_mask, msm_thermal_info.bootup_freq_control_mask, uint, 0644);
-module_param_named(core_control_mask, msm_thermal_info.core_control_mask, uint, 0664);
-module_param_named(freq_mitig_control_mask, msm_thermal_info.freq_mitig_control_mask, uint, 0644);
 
 static ssize_t show_cc_enabled(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
@@ -5443,6 +5517,9 @@ int msm_thermal_init(struct msm_thermal_data *pdata)
 
 	enabled = 1;
 	polling_enabled = 1;
+#ifdef CONFIG_THERMAL_NOTIFICATION
+	check_temp_enabled = 0;
+#endif
 	ret = cpufreq_register_notifier(&msm_thermal_cpufreq_notifier,
 			CPUFREQ_POLICY_NOTIFIER);
 	if (ret)
