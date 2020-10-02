@@ -54,6 +54,7 @@
 #include <asm/cacheflush.h>
 #ifdef CONFIG_THERMAL_NOTIFICATION
 #include <linux/thermal_notify.h>
+#include <linux/lcd_notify.h>
 #endif
 
 #define CREATE_TRACE_POINTS
@@ -167,6 +168,7 @@ static int enabled;
 static int polling_enabled;
 #ifdef CONFIG_THERMAL_NOTIFICATION
 static int check_temp_enabled;
+static struct notifier_block lcd_notif;
 #endif
 static int rails_cnt;
 static int sensor_cnt;
@@ -3109,6 +3111,33 @@ static void __ref do_thermal_notification(int temp)
                 thermal_notifier_call_chain(last_thermal_notification, NULL);
         }
 }
+
+static int lcd_notifier_callback(struct notifier_block *this,
+                                 unsigned long event, void *data)
+{
+        switch (event)
+        {
+                case LCD_EVENT_OFF_START:
+                        if (check_temp_enabled) {
+                                cancel_delayed_work_sync(&check_temp_work);
+                                do_thermal_notification(0);
+                        }
+                        break;
+
+                case LCD_EVENT_ON_END:
+                        if (check_temp_enabled) {
+                                queue_delayed_work(system_power_efficient_wq,
+						   &check_temp_work,
+                                                   msecs_to_jiffies(msm_thermal_info.poll_ms));
+                        }
+                        break;
+
+                default:
+                        break;
+        }
+
+        return 0;
+}
 #endif
 
 #ifdef CONFIG_SMP
@@ -3768,8 +3797,9 @@ reschedule:
 #else
 	if (polling_enabled)
 #endif
-		schedule_delayed_work(&check_temp_work,
-				msecs_to_jiffies(msm_thermal_info.poll_ms));
+		queue_delayed_work(system_power_efficient_wq,
+				   &check_temp_work,
+				   msecs_to_jiffies(msm_thermal_info.poll_ms));
 }
 
 static int __ref msm_thermal_cpu_callback(struct notifier_block *nfb,
@@ -5074,7 +5104,7 @@ static int __ref set_enabled(const char *val, const struct kernel_param *kp)
 #ifdef CONFIG_THERMAL_NOTIFICATION
 		check_temp_enabled = 1;
 		cluster_max_freq_init();
-		schedule_delayed_work(&check_temp_work, 0);
+		queue_delayed_work(system_power_efficient_wq, &check_temp_work, 0);
 #else
 		pr_info("no action for enabled = %d\n",
 			enabled);
@@ -5537,7 +5567,7 @@ int msm_thermal_init(struct msm_thermal_data *pdata)
 	}
 
 	INIT_DELAYED_WORK(&check_temp_work, check_temp);
-	schedule_delayed_work(&check_temp_work, 0);
+	queue_delayed_work(system_power_efficient_wq, &check_temp_work, 0);
 	msm_thermal_panic_notifier_init(&pdata->pdev->dev);
 
 	return ret;
@@ -7736,6 +7766,11 @@ int __init msm_thermal_late_init(void)
 	create_thermal_debugfs();
 	msm_thermal_add_bucket_info_nodes();
 	uio_init(msm_thermal_info.pdev);
+
+#ifdef CONFIG_THERMAL_NOTIFICATION
+	lcd_notif.notifier_call = lcd_notifier_callback;
+	lcd_register_client(&lcd_notif);
+#endif
 
 	return 0;
 }
