@@ -32,11 +32,10 @@
 #include <linux/kthread.h>
 #include <linux/slab.h>
 #include <linux/touchboost.h>
-
-#ifdef CONFIG_POWERSUSPEND
-#include <linux/powersuspend.h>
-#endif // CONFIG_POWERSUSPEND
-
+#include <linux/lcd_notify.h>
+#ifdef CONFIG_THERMAL_NOTIFICATION
+#include <linux/thermal_notify.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/cpufreq_interactive.h>
@@ -175,7 +174,7 @@ struct cpufreq_interactive_tunables {
 	bool powersave_bias;
 
 	/* Maximum frequency while the screen is off */
-#define DEFAULT_SCREEN_OFF_MAX_BIG 		1344000
+#define DEFAULT_SCREEN_OFF_MAX_BIG 	1344000
 #define DEFAULT_SCREEN_OFF_MAX_LITTLE 	1536000
 	unsigned long screen_off_max;
 	/* Not tunable, but used internally */
@@ -190,6 +189,35 @@ static struct cpufreq_interactive_tunables *common_tunables;
 static struct cpufreq_interactive_tunables *cached_common_tunables;
 
 static struct attribute_group *get_sysfs_attr(void);
+
+static struct notifier_block lcd_notif;
+
+#ifdef CONFIG_THERMAL_NOTIFICATION
+static struct notifier_block thermal_notif;
+
+static bool thermal_on = false;
+
+static int thermal_notifier_callback(struct notifier_block *this,
+                                     unsigned long event, void *data)
+{
+	switch ((thermal_cpu_limits)event)
+        {
+		case THERMAL_EVENT_CPUS_WARMING:
+		case THERMAL_EVENT_CPUS_HOT:
+		case THERMAL_EVENT_CPUS_HOTTER:
+		case THERMAL_EVENT_CPUS_HOTTEST:
+		case THERMAL_EVENT_CPUS_LIMIT_HIT:
+		{
+			thermal_on = true;
+			break;
+		}
+		default:
+			thermal_on = false;
+	}
+	return 0;
+}
+
+#endif
 
 /* Round to starting jiffy of next evaluation window */
 static u64 round_to_nw_start(u64 jif,
@@ -579,8 +607,13 @@ static void cpufreq_interactive_timer(unsigned long data)
 	}
 	spin_unlock(&ppol->load_lock);
 
+#ifdef CONFIG_THERMAL_NOTIFICATION
+	tunables->boosted = ((!thermal_on && (tunables->boost_val || now < tunables->boostpulse_endtime)) ||
+                            (tunables->touchboost_val && (now < (get_input_time() + tunables->boostpulse_duration_val))));
+#else
 	tunables->boosted = (tunables->boost_val || now < tunables->boostpulse_endtime) ||
-			    		(tunables->touchboost_val && (now < (get_input_time() + tunables->boostpulse_duration_val)));
+			    (tunables->touchboost_val && (now < (get_input_time() + tunables->boostpulse_duration_val)));
+#endif
 
 	prev_chfreq = choose_freq(ppol, prev_laf);
 	pred_chfreq = choose_freq(ppol, pred_laf);
@@ -601,7 +634,11 @@ static void cpufreq_interactive_timer(unsigned long data)
 	}
 
 	new_freq = chosen_freq;
+#ifdef CONFIG_THERMAL_NOTIFICATION
+	if (!thermal_on && (jump_to_max_no_ts || jump_to_max)) {
+#else
 	if (jump_to_max_no_ts || jump_to_max) {
+#endif
 		new_freq = ppol->policy->cpuinfo.max_freq;
 	} else if (!skip_hispeed_logic) {
 		if (pol_load >= tunables->go_hispeed_load ||
@@ -766,6 +803,16 @@ static int cpufreq_interactive_speedchange_task(void *data)
 				if (ppol->target_freq > tunables->screen_off_max)
                         		ppol->target_freq = tunables->screen_off_max;
 			}
+#ifdef CONFIG_THERMAL_NOTIFICATION
+			else if (thermal_on) {
+				if (cpumask_intersects(cpu_perf_mask, cpumask_of(cpu))) {
+					ppol->target_freq = min(ppol->target_freq, get_cluster_max_freq(BIG_CLUSTER));
+				}
+				else {
+					ppol->target_freq = min(ppol->target_freq, get_cluster_max_freq(LITTLE_CLUSTER));
+				}
+			}
+#endif
 
 			if (ppol->target_freq != ppol->policy->cur) {
 			    if (tunables->powersave_bias || !display_on)
@@ -793,6 +840,11 @@ static void cpufreq_interactive_boost(struct cpufreq_interactive_tunables *tunab
 	int anyboost = 0;
 	unsigned long flags[2];
 	struct cpufreq_interactive_policyinfo *ppol;
+
+#ifdef CONFIG_THERMAL_NOTIFICATION
+	if (thermal_on)
+		return;
+#endif
 
 	tunables->boosted = true;
 
@@ -1098,23 +1150,25 @@ show_store_one(ignore_hispeed_on_notif);
 show_store_one(fast_ramp_down);
 show_store_one(enable_prediction);
 
-#ifdef CONFIG_POWERSUSPEND
-static void gov_early_suspend(struct power_suspend *h)
+static int lcd_notifier_callback(struct notifier_block *this,
+                                 unsigned long event, void *data)
 {
-	display_on = false;
+	switch (event)
+	{
+		case LCD_EVENT_OFF_START:
+			display_on = false;
+			break;
+
+		case LCD_EVENT_ON_END:
+			display_on = true;
+			break;
+
+		default:
+			break;
+	}
+
+	return 0;
 }
-
-static void gov_late_resume(struct power_suspend *h)
-{
-	display_on = true;
-}
-
-static struct power_suspend gov_power_suspend_handler = {
-	.suspend = gov_early_suspend,
-	.resume = gov_late_resume,
-};
-#endif // CONFIG_POWERSUSPEND
-
 
 static ssize_t show_go_hispeed_load(struct cpufreq_interactive_tunables
 		*tunables, char *buf)
@@ -2013,9 +2067,16 @@ static int __init cpufreq_interactive_init(void)
 
 	display_on = true;
 
-#ifdef CONFIG_POWERSUSPEND
-	register_power_suspend(&gov_power_suspend_handler);
-#endif // CONFIG_POWERSUSPEND
+	lcd_notif.notifier_call = lcd_notifier_callback;
+	ret = lcd_register_client(&lcd_notif);
+
+#ifdef CONFIG_THERMAL_NOTIFICATION
+	thermal_notif.notifier_call = thermal_notifier_callback;
+	thermal_on = false;
+	if (thermal_register_client(&thermal_notif) != 0) {
+		pr_err("%s: Failed to register thermal callback\n", __func__);
+	}
+#endif
 
 	return ret;
 }
@@ -2034,12 +2095,15 @@ static void __exit cpufreq_interactive_exit(void)
 	kthread_stop(speedchange_task);
 	put_task_struct(speedchange_task);
 
+	lcd_unregister_client(&lcd_notif);
+#ifdef CONFIG_THERMAL_NOTIFICATION
+	if (thermal_unregister_client(&thermal_notif) != 0) {
+		pr_err("%s: Failed to unregister thermal callback\n", __func__);
+	}
+#endif
+
 	for_each_possible_cpu(cpu)
 		free_policyinfo(cpu);
-
-#ifdef CONFIG_POWERSUSPEND
-	unregister_power_suspend(&gov_power_suspend_handler);
-#endif // CONFIG_POWERSUSPEND
 }
 
 module_exit(cpufreq_interactive_exit);
