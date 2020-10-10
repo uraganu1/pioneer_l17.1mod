@@ -1485,7 +1485,7 @@ populate_dot11f_qos_caps_station(tpAniSirGlobal pMac, tpPESession pe_session,
 	if (wlan_cfg_get_int(pMac, WNI_CFG_MAX_SP_LENGTH, &val) != eSIR_SUCCESS)
 		pe_err("could not retrieve Max SP Length");
 
-		pDot11f->more_data_ack = 0;
+	pDot11f->more_data_ack = 0;
 	pDot11f->max_sp_length = (uint8_t) val;
 	pDot11f->qack = 0;
 
@@ -1987,7 +1987,7 @@ void populate_dot11f_wmm_info_station_per_session(tpAniSirGlobal pMac,
 	if (wlan_cfg_get_int(pMac, WNI_CFG_MAX_SP_LENGTH, &val) != eSIR_SUCCESS)
 		pe_err("could not retrieve Max SP Length");
 
-		pInfo->max_sp_length = (uint8_t) val;
+	pInfo->max_sp_length = (uint8_t) val;
 	pInfo->present = 1;
 }
 
@@ -2452,25 +2452,25 @@ sir_convert_fils_data_to_probersp_struct(tpSirProbeRespBeacon probe_resp,
 }
 #endif
 
-void sir_copy_caps_info(tpAniSirGlobal mac_ctx, tDot11fFfCapabilities caps,
+void sir_copy_caps_info(tpAniSirGlobal mac_ctx, const tDot11fFfCapabilities *caps,
 					    tpSirProbeRespBeacon pProbeResp)
 {
-	pProbeResp->capabilityInfo.ess = caps.ess;
-	pProbeResp->capabilityInfo.ibss = caps.ibss;
-	pProbeResp->capabilityInfo.cfPollable = caps.cfPollable;
-	pProbeResp->capabilityInfo.cfPollReq = caps.cfPollReq;
-	pProbeResp->capabilityInfo.privacy = caps.privacy;
-	pProbeResp->capabilityInfo.shortPreamble = caps.shortPreamble;
-	pProbeResp->capabilityInfo.pbcc = caps.pbcc;
-	pProbeResp->capabilityInfo.channelAgility = caps.channelAgility;
-	pProbeResp->capabilityInfo.spectrumMgt = caps.spectrumMgt;
-	pProbeResp->capabilityInfo.qos = caps.qos;
-	pProbeResp->capabilityInfo.shortSlotTime = caps.shortSlotTime;
-	pProbeResp->capabilityInfo.apsd = caps.apsd;
-	pProbeResp->capabilityInfo.rrm = caps.rrm;
-	pProbeResp->capabilityInfo.dsssOfdm = caps.dsssOfdm;
-	pProbeResp->capabilityInfo.delayedBA = caps.delayedBA;
-	pProbeResp->capabilityInfo.immediateBA = caps.immediateBA;
+	pProbeResp->capabilityInfo.ess = caps->ess;
+	pProbeResp->capabilityInfo.ibss = caps->ibss;
+	pProbeResp->capabilityInfo.cfPollable = caps->cfPollable;
+	pProbeResp->capabilityInfo.cfPollReq = caps->cfPollReq;
+	pProbeResp->capabilityInfo.privacy = caps->privacy;
+	pProbeResp->capabilityInfo.shortPreamble = caps->shortPreamble;
+	pProbeResp->capabilityInfo.pbcc = caps->pbcc;
+	pProbeResp->capabilityInfo.channelAgility = caps->channelAgility;
+	pProbeResp->capabilityInfo.spectrumMgt = caps->spectrumMgt;
+	pProbeResp->capabilityInfo.qos = caps->qos;
+	pProbeResp->capabilityInfo.shortSlotTime = caps->shortSlotTime;
+	pProbeResp->capabilityInfo.apsd = caps->apsd;
+	pProbeResp->capabilityInfo.rrm = caps->rrm;
+	pProbeResp->capabilityInfo.dsssOfdm = caps->dsssOfdm;
+	pProbeResp->capabilityInfo.delayedBA = caps->delayedBA;
+	pProbeResp->capabilityInfo.immediateBA = caps->immediateBA;
 }
 
 /**
@@ -2527,7 +2527,7 @@ tSirRetStatus sir_convert_probe_frame2_struct(tpAniSirGlobal pMac,
 	/* Beacon Interval */
 	pProbeResp->beaconInterval = pr->BeaconInterval.interval;
 
-	sir_copy_caps_info(pMac, pr->Capabilities, pProbeResp);
+	sir_copy_caps_info(pMac, &pr->Capabilities, pProbeResp);
 
 	if (!pr->SSID.present) {
 		pe_debug_rate_limited(30, "Mandatory IE SSID not present!");

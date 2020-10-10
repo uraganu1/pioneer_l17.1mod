@@ -301,10 +301,11 @@ CONFIG_SHELL := $(shell if [ -x "$$BASH" ]; then echo $$BASH; \
 	  else if [ -x /bin/bash ]; then echo /bin/bash; \
 	  else echo sh; fi ; fi)
 
+GRAPHITE     = -fgraphite -fgraphite-identity -floop-interchange -ftree-loop-distribution -floop-strip-mine -floop-block -ftree-loop-linear
 HOSTCC       = gcc
 HOSTCXX      = g++
-HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89
-HOSTCXXFLAGS = -O2
+HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O3 -fomit-frame-pointer -std=gnu89 -pipe
+HOSTCXXFLAGS = -O3
 
 # Decide whether to build built-in, modular, or both.
 # Normally, just do built-in.
@@ -362,7 +363,7 @@ CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void $(CF)
 CFLAGS_MODULE   =
 AFLAGS_MODULE   =
-LDFLAGS_MODULE  =
+LDFLAGS_MODULE  = --strip-debug
 CFLAGS_KERNEL	=
 AFLAGS_KERNEL	=
 CFLAGS_GCOV	= -fprofile-arcs -ftest-coverage -fno-tree-loop-im
@@ -389,21 +390,47 @@ LINUXINCLUDE    := \
 
 KBUILD_CPPFLAGS := -D__KERNEL__
 
+ifeq ($(cc-name),clang)
+KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
+                   -fno-strict-aliasing -fno-common \
+                   -Werror-implicit-function-declaration \
+                   -Wno-format-security \
+                   -Wno-logical-not-parentheses -Wno-incompatible-pointer-types \
+                   -Wno-format -Wno-array-bounds \
+                   -Wno-parentheses -Wno-sizeof-pointer-memaccess \
+                   -fno-asynchronous-unwind-tables \
+                   -mcpu=cortex-a53 -mtune=cortex-a53 -march=armv8-a+crc+crypto -mcpu=cortex-a53+crc+crypto \
+                   -fdiagnostics-color=always -ftree-vectorize -pipe \
+                   -std=gnu89 $(call cc-option,-fno-PIE)
+else
+HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O3 -fomit-frame-pointer -std=gnu89 -pipe $(GRAPHITE)
 KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -fno-strict-aliasing -fno-common \
 		   -Werror-implicit-function-declaration \
 		   -Wno-format-security \
+                   -Wno-bool-compare -Wno-logical-not-parentheses -Wno-incompatible-pointer-types \
+                   -Wno-format -Wno-array-bounds -fno-modulo-sched \
+                   -Wno-parentheses -Wno-sizeof-pointer-memaccess \
+                   -fno-asynchronous-unwind-tables \
+                   -mcpu=cortex-a53 -mtune=cortex-a53 -march=armv8-a+crc+crypto -mcpu=cortex-a53+crc+crypto \
+		   -fdiagnostics-color=always -ftree-vectorize -pipe \
 		   -std=gnu89 $(call cc-option,-fno-PIE)
+endif
 
 ifeq ($(TARGET_BOARD_TYPE),auto)
 KBUILD_CFLAGS    += -DCONFIG_PLATFORM_AUTO
 endif
 
+ifeq ($(cc-name),clang)
+KBUILD_CFLAGS  += -pipe -fno-pic -O3 -g0
+else
+KBUILD_CFLAGS  += -pipe -fno-pic -O3 -g0 -fivopts
+endif
 KBUILD_AFLAGS_KERNEL :=
 KBUILD_CFLAGS_KERNEL :=
 KBUILD_AFLAGS   := -D__ASSEMBLY__ $(call cc-option,-fno-PIE)
 KBUILD_AFLAGS_MODULE  := -DMODULE
-KBUILD_CFLAGS_MODULE  := -DMODULE
+KBUILD_CFLAGS_MODULE  := -DMODULE -fno-pic
 KBUILD_LDFLAGS_MODULE := -T $(srctree)/scripts/module-common.lds
 CLANG_FLAGS :=
 
@@ -650,18 +677,16 @@ KBUILD_CFLAGS	+= $(call cc-disable-warning, format-overflow)
 KBUILD_CFLAGS	+= $(call cc-disable-warning, int-in-bool-context)
 KBUILD_CFLAGS	+= $(call cc-disable-warning, address-of-packed-member)
 KBUILD_CFLAGS	+= $(call cc-disable-warning, attribute-alias)
+ifeq ($(cc-name),clang)
 # clang's -Wpointer-to-int-cast warns when casting to enums, which does not match GCC.
 # Disable this warning because it is very noisy across the kernel and serves no real purpose.
 KBUILD_CFLAGS += $(call cc-disable-warning, pointer-to-enum-cast)
+endif
 
 ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS	+= -Os
 else
-ifdef CONFIG_PROFILE_ALL_BRANCHES
-KBUILD_CFLAGS	+= -O2
-else
-KBUILD_CFLAGS   += -O2
-endif
+KBUILD_CFLAGS   += -O3
 endif
 
 ifdef CONFIG_CC_WERROR
