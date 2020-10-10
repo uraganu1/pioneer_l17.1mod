@@ -608,9 +608,22 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		//		data.detect_threshold, __func__);
 
 		DEBUG_PRINT("fp_ioctl >>> fp Trigger function init\n");
+#if defined(CONFIG_FP2WAKE)
+		if ((fp2w_switch == 1) && (fp_LCD_POWEROFF == atomic_read(&etspi->display_state))) {
+			retval = Interrupt_Init(etspi, data.int_mode,
+                                                data.detect_period,
+                                                data.detect_threshold + 2);
+		}
+		else {
+			retval = Interrupt_Init(etspi, data.int_mode,
+                                                data.detect_period,
+                                                data.detect_threshold);
+		}
+#else
 		retval = Interrupt_Init(etspi, data.int_mode,
-						data.detect_period,
-						data.detect_threshold);
+                                        data.detect_period,
+                                        data.detect_threshold);
+#endif
 		DEBUG_PRINT("fp_ioctl trigger init = %x\n", retval);
 
 #if defined(CONFIG_FP2WAKE)
