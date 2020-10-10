@@ -77,9 +77,9 @@ static struct hotplug_tuners {
 } hotplug_tuners_ins = {
 	.hotplug_sampling_rate = 32,
 	.hotplug_enable = 0,
-	.min_cpus_online = 1,
+	.min_cpus_online = 2,
 	.maxcoreslimit = NR_CPUS,
-	.maxcoreslimit_sleep = 1,
+	.maxcoreslimit_sleep = 4,
 	.hp_io_is_busy = 0,
 	.min_little_load = 64,
 	.favor_big_cpus = 1,
@@ -1024,7 +1024,7 @@ static ssize_t store_min_cpus_online(struct kobject *a, struct kobj_attribute *b
 	if (ret != 1)
 		return -EINVAL;
 
-	input = max(input > NR_CPUS ? NR_CPUS : input, 1);
+	input = max(input > NR_CPUS ? NR_CPUS : input, 2);
 
 	mutex_lock(&hotplug_tuners_ins.alu_hotplug_mutex);
 
@@ -1053,7 +1053,7 @@ static ssize_t store_maxcoreslimit(struct kobject *a, struct kobj_attribute *b,
 	if (ret != 1)
 		return -EINVAL;
 
-	input = max(input > NR_CPUS ? NR_CPUS : input, 1);
+	input = max(input > NR_CPUS ? NR_CPUS : input, 2);
 
 	mutex_lock(&hotplug_tuners_ins.alu_hotplug_mutex);
 
@@ -1087,7 +1087,7 @@ static ssize_t store_maxcoreslimit_sleep(struct kobject *a,
 	if (ret != 1)
 		return -EINVAL;
 
-	input = max(input > NR_CPUS ? NR_CPUS : input, 1);
+	input = max(input > NR_CPUS ? NR_CPUS : input, 2);
 
 	mutex_lock(&hotplug_tuners_ins.alu_hotplug_mutex);
 
@@ -1208,7 +1208,7 @@ static ssize_t store_thermally_controlled(struct kobject *a, struct kobj_attribu
         if (ret != 1)
                 return -EINVAL;
 
-        if ((input > 0) && (input <= 1)) {
+        if ((input >= 0) && (input <= 1)) {
                 mutex_lock(&hotplug_tuners_ins.alu_hotplug_mutex);
                 if (input == hotplug_tuners_ins.thermally_controlled) {
                         mutex_unlock(&hotplug_tuners_ins.alu_hotplug_mutex);
