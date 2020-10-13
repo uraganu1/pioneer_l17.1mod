@@ -40,10 +40,9 @@
 #define LOGTAG "[dynswappiness]: "
 
 #define K(x) ((x) << (PAGE_SHIFT - 10))
-#define DEFAULT_DS_STATE 	0
+#define DEFAULT_DS_STATE 	1
 #define MAXIMUM_SWAPPINESS 	100
 #define MINIMUM_SWAPPINESS 	0
-#define SWAPPINESS_FILE 	"/proc/sys/vm/swappiness"
 #define CHK_CRITICAL_TIME	8000
 #define CHK_RESTRICTED_TIME 	16000
 #define CHK_NORMAL_TIME		32000
@@ -73,12 +72,9 @@ static int get_new_swappiness(int level)
         return level;
 }
 
-static void ds_set_swappiness(int c_swappiness, int n_diff)
+static void ds_set_swappiness(unsigned int c_swappiness, int n_diff)
 {
-	struct file *f;
-	char buf[16];
-	mm_segment_t fs;
-	int len, level;
+	int level;
 
 	if (((c_swappiness >= MAXIMUM_SWAPPINESS) && (n_diff >= 0)) ||
 	   ((c_swappiness <= MINIMUM_SWAPPINESS) && (n_diff <= 0)))
@@ -86,62 +82,35 @@ static void ds_set_swappiness(int c_swappiness, int n_diff)
 
 	level = get_new_swappiness(c_swappiness + n_diff);
 
-	memset(buf, 0, sizeof(buf));
-
-	f = filp_open(SWAPPINESS_FILE, O_WRONLY, 0644);
-	if (f == NULL)
-		printk(KERN_ALERT "filp_open error!!.\n");
-	else {
-		len = scnprintf(buf, sizeof(buf), "%d\n", level);
-		fs = get_fs();
-		set_fs(KERNEL_DS);
-		f->f_op->write(f, buf, len, &f->f_pos);
-		set_fs(fs);
-		filp_close(f, NULL);
-	}
-	no_changes_counter = 0;
+	vm_swappiness = level;
 }
 
-static int ds_get_swappiness(void)
+static unsigned int ds_get_swappiness(void)
 {
-	struct file *f;
-        char buf[16];
-        mm_segment_t fs;
-        int ret, val;
+	int val;
 
-	memset(buf, 0, sizeof(buf));
+	val = vm_swappiness;
 
-	f = filp_open(SWAPPINESS_FILE, O_RDONLY, 0);
-	if (f == NULL)
-		printk(KERN_ALERT "filp_open error!!.\n");
-	else {
-		fs = get_fs();
-		set_fs(KERNEL_DS);
-		f->f_op->read(f, buf, sizeof(buf), &f->f_pos);
-		set_fs(fs);
-		filp_close(f, NULL);
-		ret = kstrtoint(buf, 10, &val);
-		if ((ret) || (val < MINIMUM_SWAPPINESS))
-			return MINIMUM_SWAPPINESS;
-		if (val > MAXIMUM_SWAPPINESS)
-			return MAXIMUM_SWAPPINESS;
-		return val;
-
-	}
-	return MINIMUM_SWAPPINESS;
+	if (val <= MINIMUM_SWAPPINESS)
+		return MINIMUM_SWAPPINESS;
+	if (val >= MAXIMUM_SWAPPINESS)
+		return MAXIMUM_SWAPPINESS;
+	return val;
 }
 
-static void check_mem(struct work_struct *work)
+static void check_mem_func(struct work_struct *work)
 {
 	struct sysinfo i;
-	int swap_total = 0;
-	int swap_free = 0;
-	int critical_level, restriction_level, normal_level, swap_free_diff, current_swappiness;
+	unsigned int swap_total = 0;
+	unsigned int swap_free = 0;
+	unsigned int critical_level, restriction_level, normal_level, current_swappiness;
+	int swap_free_diff;
 
 	mutex_lock(&ds_lock);
 	si_swapinfo(&i);
 	swap_total = K(i.totalswap);
 	swap_free = K(i.freeswap);
+
 	if (swap_total > 0) {
 		if (init_chk) {
 			init_chk = false;
@@ -248,7 +217,7 @@ static void ds_set_state(int state)
 			queue_delayed_work(system_power_efficient_wq,
                                            &check_mem_work, CHK_CRITICAL_TIME);
 		}
-		atomic_set(&ds_val, val);
+		atomic_set(&ds_val, state);
 	}
 }
 
@@ -318,13 +287,13 @@ static int __init dynswappiness_init(void)
 
 	if (ret == 0) {
 		mutex_init(&ds_lock);
-		INIT_DELAYED_WORK(&check_mem_work, check_mem);
+		INIT_DELAYED_WORK(&check_mem_work, check_mem_func);
 #if defined(CONFIG_POWERSUSPEND)
         	register_power_suspend(&dynswappiness_power_suspend_driver);
 #endif  // CONFIG_POWERSUSPEND
 		if (1 == atomic_read(&ds_val)) {
 			queue_delayed_work(system_power_efficient_wq,
-                                   &check_mem_work, msecs_to_jiffies(CHK_NORMAL_TIME));
+                                   &check_mem_work, msecs_to_jiffies(CHK_NORMAL_TIME*8));
 		}
 	}
 	return 0;
