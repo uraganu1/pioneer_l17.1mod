@@ -116,9 +116,9 @@ static void check_mem_func(struct work_struct *work)
 			init_chk = false;
 		}
 		else {
-			critical_level = swap_total/8;
-			restriction_level = swap_total/4;
-			normal_level = swap_total/2;
+			critical_level = swap_total/16;
+			restriction_level = swap_total/8;
+			normal_level = swap_total/4;
 			swap_free_diff = sfp_level - swap_free;
 			current_swappiness = ds_get_swappiness();
 			no_changes_counter++;
@@ -134,10 +134,10 @@ static void check_mem_func(struct work_struct *work)
                                         if (no_changes_counter > NO_CHANGES_CRITICAL_MAX)
                                                 ds_set_swappiness(current_swappiness, -4);
                                 } else if (swap_free_diff > 0) {
-                			if (swap_free_diff > swap_total/16) {
+                			if (swap_free_diff > swap_total/32) {
 						ds_set_swappiness(current_swappiness, -16);
 					}
-					else if (swap_free_diff > swap_total/32) {
+					else if (swap_free_diff > swap_total/64) {
 						ds_set_swappiness(current_swappiness, -8);
 					}
 					else {
