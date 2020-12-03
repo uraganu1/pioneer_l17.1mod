@@ -77,7 +77,11 @@ static u64 zswap_duplicate_entry;
 **********************************/
 
 /* Enable/disable zswap (disabled by default) */
+#ifdef CONFIG_ZEN_INTERACTIVE
+static bool zswap_enabled = true;
+#else
 static bool zswap_enabled;
+#endif
 static int zswap_enabled_param_set(const char *,
 				   const struct kernel_param *);
 static struct kernel_param_ops zswap_enabled_param_ops = {
@@ -87,7 +91,11 @@ static struct kernel_param_ops zswap_enabled_param_ops = {
 module_param_cb(enabled, &zswap_enabled_param_ops, &zswap_enabled, 0644);
 
 /* Crypto compressor to use */
+#ifdef CONFIG_ZEN_INTERACTIVE
+#define ZSWAP_COMPRESSOR_DEFAULT "lz4"
+#else
 #define ZSWAP_COMPRESSOR_DEFAULT "lzo"
+#endif
 static char *zswap_compressor = ZSWAP_COMPRESSOR_DEFAULT;
 static int zswap_compressor_param_set(const char *,
 				      const struct kernel_param *);
@@ -100,7 +108,11 @@ module_param_cb(compressor, &zswap_compressor_param_ops,
 		&zswap_compressor, 0644);
 
 /* Compressed storage zpool to use */
+#ifdef CONFIG_ZEN_INTERACTIVE
+#define ZSWAP_ZPOOL_DEFAULT "z3fold"
+#else
 #define ZSWAP_ZPOOL_DEFAULT "zbud"
+#endif
 static char *zswap_zpool_type = ZSWAP_ZPOOL_DEFAULT;
 static int zswap_zpool_param_set(const char *, const struct kernel_param *);
 static struct kernel_param_ops zswap_zpool_param_ops = {
