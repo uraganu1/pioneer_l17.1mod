@@ -56,10 +56,18 @@ if ANDROID_SIMPLE_LMK
 
 config ANDROID_SIMPLE_LMK_MINFREE
         int "Minimum MiB of memory to free per reclaim"
-        range 8 512
-        default 128
+        range 8 64
+        default 32
         help
           Simple LMK will try to free at least this much memory per reclaim.
+
+config ANDROID_SIMPLE_LMK_MINMEM
+	int "Amount of memory from which the lmk will avoid killing the low adj apps"
+	default 128
+	help
+	  Simple LMK will not kill low adj apps when memory threshold is above
+          this limit given in kB
+	
 
 config ANDROID_SIMPLE_LMK_TIMEOUT_MSEC
         int "Reclaim timeout in milliseconds"

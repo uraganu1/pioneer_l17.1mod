@@ -5,27 +5,53 @@
 
 #define pr_fmt(fmt) "simple_lmk: " fmt
 
+#include <linux/module.h>
+#include <linux/syscalls.h>
 #include <linux/kthread.h>
 #include <linux/mm.h>
 #include <linux/moduleparam.h>
 #include <linux/oom.h>
 #include <linux/sort.h>
 #include <linux/vmpressure.h>
+#include <linux/swap.h>
+#include <linux/slab.h>
+#include <linux/android_tweaks.h>
 
 /* The minimum number of pages to free per reclaim */
 #define MIN_FREE_PAGES (CONFIG_ANDROID_SIMPLE_LMK_MINFREE * SZ_1M / PAGE_SIZE)
 
+#define MAX_FREE_PAGES (64 * SZ_1M / PAGE_SIZE)
+
+#define MIN_MEM_FREE (CONFIG_ANDROID_SIMPLE_LMK_MINMEM * SZ_1K)
+
+#define MAX_FREE_KL MAX_FREE_PAGES/MIN_FREE_PAGES
+
+#define K(x) ((x) << (PAGE_SHIFT - 10))
+
 /* Kill up to this many victims per reclaim */
-#define MAX_VICTIMS 1024
+#define MAX_VICTIMS 512
 
 /* Timeout in jiffies for each reclaim */
 #define RECLAIM_EXPIRES msecs_to_jiffies(CONFIG_ANDROID_SIMPLE_LMK_TIMEOUT_MSEC)
+
+#define DEFAULT_NKPS "kcompactd,kswapd,init,ecryptfs,msm_watchdog,rvicemanager,vold,magiskd,zygote,ashmemd,lmkd,gpuservice,oid.systemui,ndroid.phone,automagic"
 
 struct victim_info {
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	unsigned long size;
 };
+
+typedef struct NKPSll NKPSLL;
+
+struct NKPSll {
+        char *el;
+        NKPSLL *next;
+};
+
+static NKPSLL *nkpl = NULL;
+
+static struct mutex slmk_lock;
 
 /* Pulled from the Android framework. Lower adj means higher priority. */
 #ifdef CONFIG_ANDROID_SIMPLE_LMK_PIE
@@ -62,7 +88,6 @@ static const unsigned short adjs[] = {
 	100, /* VISIBLE_APP_ADJ */
 	50, /* PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ */
 	0 /* FOREGROUND_APP_ADJ */
-
 #endif
 };
 
@@ -105,6 +130,24 @@ static unsigned long get_total_mm_pages(struct mm_struct *mm)
 	return pages;
 }
 
+static int is_tsk_killable(unsigned short adj, char *tsk_name)
+{
+	NKPSLL *nkpsl = nkpl;
+
+        if ((adj == 0) && (tsk_name != NULL)) {
+		mutex_lock(&slmk_lock);
+		while (nkpsl != NULL) {
+			if (strstr(tsk_name, nkpsl->el) != NULL) {
+				mutex_unlock(&slmk_lock);
+				return 0;
+			}
+			nkpsl = nkpsl->next;
+		}
+		mutex_unlock(&slmk_lock);
+        }
+        return 1;
+}
+
 #ifdef CONFIG_ANDROID_SIMPLE_LMK_PIE
 static unsigned long find_victims(int *vindex, short target_adj)
 #else
@@ -145,7 +188,7 @@ static unsigned long find_victims(int *vindex, unsigned short target_adj_min,
 			continue;
 
 		vtsk = find_lock_task_mm(tsk);
-		if (!vtsk)
+		if (!vtsk || !is_tsk_killable(target_adj_min, vtsk->comm))
 			continue;
 
 		/* Store this potential victim away for later */
@@ -197,18 +240,69 @@ static int process_victims(int vlen, unsigned long pages_needed)
 	return nr_to_kill;
 }
 
+static long get_available_memory()
+{
+	struct sysinfo m;
+	long available;
+	unsigned long pages[NR_LRU_LISTS];
+	struct zone *zone;
+	unsigned long pagecache;
+	unsigned long wmark_low = 0;
+	int lru;
+
+	si_meminfo(&m);
+
+	for (lru = LRU_BASE; lru < NR_LRU_LISTS; lru++)
+                pages[lru] = global_page_state(NR_LRU_BASE + lru);
+
+	for_each_zone(zone)
+                wmark_low += zone->watermark[WMARK_LOW];
+
+	available = m.freeram - totalreserve_pages;
+
+	if (available < 0)
+		available = 0;
+
+	pagecache = pages[LRU_ACTIVE_FILE] + pages[LRU_INACTIVE_FILE];
+
+	pagecache -= min(pagecache / 2, wmark_low);
+
+	available += pagecache;
+
+	available += global_page_state(NR_SLAB_RECLAIMABLE) -
+                     min(global_page_state(NR_SLAB_RECLAIMABLE) / 2, wmark_low);
+
+	available += global_page_state(NR_INDIRECTLY_RECLAIMABLE_BYTES) >>
+                PAGE_SHIFT;
+
+	if (available < 0)
+                available = 0;
+
+	return K(available);
+}
+
 static void scan_and_kill(unsigned long pages_needed)
 {
 	int i, nr_to_kill = 0, nr_found = 0;
 	unsigned long pages_found = 0;
+	int kl = 0;
+	long available_memory = 0;
+
+	available_memory = get_available_memory();
+
+	for (i = 1; MIN_MEM_FREE * i < available_memory; i++)
+		kl++;
+
+	if (kl < MAX_FREE_KL)
+		pages_needed *= (MAX_FREE_KL - kl);
 
 	/* Hold an RCU read lock while traversing the global process list */
 	rcu_read_lock();
 #ifdef CONFIG_ANDROID_SIMPLE_LMK_PIE
-	for (i = 0; i < ARRAY_SIZE(adj_prio); i++) {
+	for (i = 0; i < ARRAY_SIZE(adj_prio) - kl; i++) {
 		pages_found += find_victims(&nr_found, adj_prio[i]);
 #else
-	for (i = 1; i < ARRAY_SIZE(adjs); i++) {
+	for (i = 1; i < ARRAY_SIZE(adjs) - kl; i++) {
 		pages_found += find_victims(&nr_found, adjs[i], adjs[i - 1]);
 #endif
 		if (pages_found >= pages_needed || nr_found == MAX_VICTIMS)
@@ -218,7 +312,7 @@ static void scan_and_kill(unsigned long pages_needed)
 
 	/* Pretty unlikely but it can happen */
 	if (unlikely(!nr_found)) {
-		pr_err("No processes available to kill!\n");
+		printk_once("No processes available to kill!\n");
 		return;
 	}
 
@@ -345,7 +439,149 @@ static const struct kernel_param_ops simple_lmk_init_ops = {
 	.set = simple_lmk_init_set
 };
 
+static ssize_t fs_slmknonkillable_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+        size_t count = 0;
+        NKPSLL *nkpsl = nkpl;
+        char tbuf[1024];
+
+        memset(tbuf, 0, sizeof(tbuf));
+
+        mutex_lock(&slmk_lock);
+        while ((nkpsl != NULL) && ((count + strlen(nkpsl->el)) < sizeof(tbuf))) {
+                if (nkpsl->next != NULL) {
+                        count += sprintf(&tbuf[count], "%s,", nkpsl->el);
+                }
+                else {
+                        count += sprintf(&tbuf[count], "%s", nkpsl->el);
+                }
+                nkpsl = nkpsl->next;
+        }
+        sprintf(buf, "%s\n", tbuf);
+        count++;
+        mutex_unlock(&slmk_lock);
+
+        return count;
+}
+
+static ssize_t fs_slmknonkillable_dump(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+        char *pend = NULL, *ptok = NULL;
+        NKPSLL *ckpsl = nkpl;
+        NKPSLL *nkpsl = NULL;
+        char *pr = kstrdup(buf, GFP_KERNEL);
+
+        mutex_lock(&slmk_lock);
+        while (ckpsl != NULL) {
+                nkpsl = ckpsl->next;
+                kfree(ckpsl->el);
+                kfree(ckpsl);
+                ckpsl = nkpsl;
+        }
+        nkpl = NULL;
+        ptok = pr;
+        pend = pr;
+
+        ptok = strsep(&pend, ",");
+        if (ptok != NULL) {
+                ckpsl = kmalloc(sizeof(struct NKPSll), GFP_KERNEL);
+                ckpsl->el = kmalloc(sizeof(strlen(ptok)) + 1, GFP_KERNEL);
+                memcpy(ckpsl->el, ptok, strlen(ptok));
+                if (ckpsl->el[strlen(ptok)-1] == '\n')
+                        ckpsl->el[strlen(ptok)-1] = 0;
+                else
+                        ckpsl->el[strlen(ptok)] = 0;
+                ckpsl->next = NULL;
+                nkpl = ckpsl;
+                while ((ptok = strsep(&pend, ",")) != NULL) {
+                        nkpsl = kmalloc(sizeof(struct NKPSll), GFP_KERNEL);
+                        nkpsl->el = kmalloc(sizeof(strlen(ptok)) + 1, GFP_KERNEL);
+                        memcpy(nkpsl->el, ptok, strlen(ptok));
+                        if (nkpsl->el[strlen(ptok)-1] == '\n')
+                                nkpsl->el[strlen(ptok)-1] = 0;
+                        else
+                                nkpsl->el[strlen(ptok)] = 0;
+                        nkpsl->next = NULL;
+                        ckpsl->next = nkpsl;
+			ckpsl = nkpsl;
+                }
+        }
+        mutex_unlock(&slmk_lock);
+        kfree(pr);
+
+        return count;
+}
+static DEVICE_ATTR(slmknonkillable, 0644, fs_slmknonkillable_show, fs_slmknonkillable_dump);
+
+static int __init simplelmk_init(void)
+{
+	int ret = 0;
+	char dnkpl[] = DEFAULT_NKPS;
+        char *pr = NULL, *pend = NULL, *ptok = NULL;
+        NKPSLL *nkpsl = NULL, *ckpsl = NULL;
+
+	if (android_tweaks_kfpobj == NULL) {
+                android_tweaks_kfpobj = kobject_create_and_add("android_tweaks", NULL) ;
+        }
+        if (android_tweaks_kfpobj == NULL) {
+                pr_warn("%s: android_tweaks_kobj create_and_add failed\n", __func__);
+                ret = -ENODEV;
+        }
+        else {
+                ret = sysfs_create_file(android_tweaks_kfpobj, &dev_attr_slmknonkillable.attr);
+                if (ret) {
+                        pr_warn("%s: sysfs_create_file failed for slmknonkillable\n", __func__);
+                }
+        }
+ 
+	mutex_init(&slmk_lock);
+	if (ret == 0) {
+		pr = kstrdup(dnkpl, GFP_KERNEL);
+                pend = pr;
+                ptok = pr;
+                ptok = strsep(&pend, ",");
+		if (ptok != NULL) {
+                        ckpsl = kmalloc(sizeof(struct NKPSll), GFP_KERNEL);
+                        ckpsl->el = kmalloc(sizeof(strlen(ptok)) + 1, GFP_KERNEL);
+                        memcpy(ckpsl->el, ptok, strlen(ptok));
+                        ckpsl->el[strlen(ptok)] = 0;
+                        ckpsl->next = NULL;
+                        nkpl = ckpsl;
+                        while ((ptok = strsep(&pend, ",")) != NULL) {
+                                nkpsl = kmalloc(sizeof(struct NKPSll), GFP_KERNEL);
+                                nkpsl->el = kmalloc(sizeof(strlen(ptok)) + 1, GFP_KERNEL);
+                                memcpy(nkpsl->el, ptok, strlen(ptok));
+                                nkpsl->el[strlen(ptok)] = 0;
+                                nkpsl->next = NULL;
+                                ckpsl->next = nkpsl;
+                                ckpsl = nkpsl;
+                        }
+                }
+                kfree(pr);
+	}
+	return 0;
+}
+
+static void __exit simplelmk_exit(void)
+{
+	NKPSLL *ckpsl = nkpl;
+	NKPSLL *nkpsl = NULL;
+
+	mutex_lock(&slmk_lock);
+	while (ckpsl != NULL) {
+                nkpsl = ckpsl->next;
+                kfree(ckpsl->el);
+                kfree(ckpsl);
+                ckpsl = nkpsl;
+        }
+	mutex_unlock(&slmk_lock);
+	mutex_destroy(&slmk_lock);
+}
+
 /* Needed to prevent Android from thinking there's no LMK and thus rebooting */
 #undef MODULE_PARAM_PREFIX
 #define MODULE_PARAM_PREFIX "lowmemorykiller."
 module_param_cb(minfree, &simple_lmk_init_ops, NULL, 0200);
+module_init(simplelmk_init);
+module_exit(simplelmk_exit);
+
